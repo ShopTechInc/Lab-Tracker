@@ -5,7 +5,7 @@
    Students are booth numbers + random codes. Names live only in the school Sheet's Key tab. */
 
 const PREVIEW = /*@PREVIEW@*/false;
-const VERSION = '1.1.0';
+const VERSION = '1.2.2';
 
 // ---------- small helpers ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -108,6 +108,7 @@ function defaultConfig() {
       .map(label => ({ id: uid(), label, active: true })),
     reasons: ['Tools not put away', 'Floor not swept', 'Leads or hoses not coiled', 'Scrap or slag left', 'Gas valve left open', 'Curtain not closed']
       .map(label => ({ id: uid(), label, active: true })),
+    boothCount: 12, storageBooths: [],
     projects: [], base: 10, boothPts: -1, boothMajorPts: -3, patternN: 3, patternDays: 30, stampPhotos: true,
     lastExport: null, lastExportN: 0, sample: false,
     ui: { cls: null, tab: 'class', project: null, range: 'week', rcls: 'all', from: null, to: null, hideInstall: false },
@@ -124,7 +125,47 @@ const seatById = id => S.seats.find(s => s.id === id);
 const behById = id => S.behaviors.find(b => b.id === id);
 const taskById = id => S.tasks.find(t => t.id === id);
 const projById = id => S.projects.find(p => p.id === id);
-const seatsOf = clsId => S.seats.filter(s => s.cls === clsId && s.active).sort((a, b) => a.booth - b.booth);
+const SIDES = ['A', 'B', 'C'];
+const MAX_PER_BOOTH = 3;
+const bySeat = (a, b) => a.booth - b.booth || (a.side || '').localeCompare(b.side || '');
+const seatsOf = clsId => S.seats.filter(s => s.cls === clsId && s.active).sort(bySeat);
+const boothMates = s => S.seats.filter(x => x.active && x.cls === s.cls && x.booth === s.booth && x.id !== s.id);
+// Students sharing a booth show as 3A, 3B, 3C. A student alone in a booth is just 3.
+const sideOf = s => (s && s.active && s.side && boothMates(s).length ? s.side : '');
+const bl = s => `${s.booth}${sideOf(s)}`;
+const isStorage = b => S.storageBooths.includes(Number(b));
+const occupants = (clsId, b) => seatsOf(clsId).filter(s => s.booth === Number(b));
+function placeSeat(s) {
+  const mates = boothMates(s);
+  if (!mates.length) return;
+  const used = new Set(mates.map(m => m.side).filter(Boolean));
+  for (const m of mates) if (!m.side) { m.side = SIDES.find(l => !used.has(l)); used.add(m.side); }
+  if (!s.side || used.has(s.side)) s.side = SIDES.find(l => !used.has(l)) || '';
+}
+// First empty welding booth; once every booth has someone, the first booth with room to share.
+function freeBooth(clsId) {
+  const occ = new Map();
+  seatsOf(clsId).forEach(s => occ.set(s.booth, (occ.get(s.booth) || 0) + 1));
+  const weld = [];
+  for (let b = 1; b <= S.boothCount; b++) if (!isStorage(b)) weld.push(b);
+  for (let k = 0; k < MAX_PER_BOOTH; k++) { const b = weld.find(x => (occ.get(x) || 0) === k); if (b) return b; }
+  return null;
+}
+// The room in booth order: booths with students in this class, plus the storage booths.
+function boothCells(clsId) {
+  const by = new Map();
+  for (const s of seatsOf(clsId)) { if (!by.has(s.booth)) by.set(s.booth, []); by.get(s.booth).push(s); }
+  const nums = new Set([...by.keys(), ...S.storageBooths]);
+  return [...nums].sort((a, b) => a - b).map(b => (by.has(b) ? { booth: b, seats: by.get(b) } : { booth: b, storage: true }));
+}
+const slotHTML = b => `<div class="slot" role="img" aria-label="Booth ${b}: storage"><span class="bn-label">BOOTH</span><span class="bn">${b}</span><span class="state">Storage</span></div>`;
+function loadConfig(raw) {
+  const c = Object.assign(defaultConfig(), raw);
+  c.ui = Object.assign(defaultConfig().ui, raw.ui || {});
+  if (raw.boothCount == null) { const mx = (c.seats || []).reduce((m, x) => Math.max(m, x.booth || 0), 0); c.boothCount = mx || 12; }
+  if (!Array.isArray(c.storageBooths)) c.storageBooths = [];
+  return c;
+}
 const activeEv = () => EV.filter(e => !e.voided);
 function curClass() {
   if (!S || !S.classes.length) return null;
@@ -144,7 +185,7 @@ function makeEvent(e) {
   const d = new Date();
   return Object.assign({
     id: uid(), ts: d.getTime(), date: ymd(d), time: hm(d), cls: '', clsName: '', booth: null, code: '', kind: '',
-    item: '', ref: '', status: '', pts: 0, project: '', projectId: '', count: 0, note: '', photo: '', sweep: '', task: '', voided: false,
+    item: '', ref: '', status: '', pts: 0, project: '', projectId: '', count: 0, note: '', photo: '', sweep: '', task: '', mates: '', matesResp: '', voided: false,
   }, e);
 }
 async function logEvent(e) {
@@ -182,7 +223,7 @@ function toast(msg, undo, ms) {
   t.hidden = false;
   clearTimeout(toastTimer);
   if (undo) $('#toast-undo').onclick = async () => { t.hidden = true; clearTimeout(toastTimer); await undo(); render(); };
-  toastTimer = setTimeout(() => { t.hidden = true; }, ms || (undo ? 6500 : 3200));
+  toastTimer = setTimeout(() => { t.hidden = true; }, ms || (undo ? 2500 : 3200));
 }
 function ask({ title, body = '', ok = 'OK', danger = false }) {
   return new Promise(resolve => {
@@ -250,6 +291,24 @@ function photoNames(e) {
     ? `${e.date}_${slug(clsLabel(e))}_${e.code}_booth-${e.booth}_${e.status === 'Major' ? 'major' : 'dirty'}`
     : `${e.date}_${slug(clsLabel(e))}_${e.code}_${slug(projLabel(e))}_${slug(itemLabel(e))}`;
   return ids.map((id, i) => `${base}_${ids.length > 1 ? `${i + 1}-` : ''}${id.slice(0, 4)}.jpg`);
+}
+
+function shareInfo(e) {
+  if (!e || e.kind !== 'booth' || !e.mates) return null;
+  const total = e.mates.split(';').length + 1, marked = (e.matesResp ? e.matesResp.split(';').length : 0) + 1;
+  return { total, marked };
+}
+function shareText(e) {
+  const x = shareInfo(e);
+  if (!x) return '';
+  if (x.marked === 1) return `Shared booth (${x.total} students); only this student was marked responsible`;
+  if (x.marked === x.total) return `Shared booth (${x.total} students); every student in it was marked responsible`;
+  return `Shared booth (${x.total} students); ${x.marked} of them were marked responsible`;
+}
+function shareShort(e) {
+  const x = shareInfo(e);
+  if (!x) return '';
+  return x.marked === 1 ? 'shared booth, only this student marked' : x.marked === x.total ? 'shared booth, all marked' : `shared booth, ${x.marked} of ${x.total} marked`;
 }
 
 // ---------- photos ----------
@@ -455,12 +514,13 @@ function viewWelcome() {
       <h2>Set up your first class</h2>
       <label class="lbl" for="w-cls">Class name<input class="field" id="w-cls" value="Period 1" maxlength="40" required></label>
       <div class="edit-grid">
-        <label class="lbl" for="w-booths">Booths in use<input class="field num" id="w-booths" type="number" min="1" max="60" value="12" required></label>
-        <span></span>
+        <label class="lbl" for="w-booths">Students<input class="field num" id="w-booths" type="number" min="1" max="60" value="12" required></label>
+        <label class="lbl" for="w-shop">Booths in the shop<input class="field num" id="w-shop" type="number" min="1" max="60" value="12" required></label>
+        <label class="lbl" for="w-storage" style="grid-column: 1 / -1">Storage booths, if any<input class="field" id="w-storage" placeholder="For example 7, 8" inputmode="numeric" autocomplete="off"></label>
         <label class="lbl" for="w-start">Starts<input class="field" id="w-start" type="time" value="07:45"></label>
         <label class="lbl" for="w-end">Ends<input class="field" id="w-end" type="time" value="09:15"></label>
       </div>
-      <p class="muted small">Start and end times let the app open to whichever class is in session. You can add classes later.</p>
+      <p class="muted small">Students fill the empty welding booths first; any extra students share a booth. Start and end times let the app open to whichever class is in session. You can change all of this later in Setup.</p>
       <button type="submit" class="btn primary">Create class</button>
     </form>
     <div class="card">
@@ -480,14 +540,18 @@ function viewClass() {
   const t = today();
   const tev = todayEvents(c.id);
   const held = hasDay(c.id, t);
-  const tiles = seats.map(s => tileHTML(s, tev)).join('');
+  const tiles = boothCells(c.id).map(cell => {
+    if (cell.storage) return slotHTML(cell.booth);
+    if (cell.seats.length === 1) return tileHTML(cell.seats[0], tev);
+    return `<div class="pair${cell.seats.length > 2 ? ' n3' : ''}" role="group" aria-label="Booth ${cell.booth}, shared by ${cell.seats.length} students"><div class="pair-head">Booth ${cell.booth} · shared</div><div class="pair-tiles">${cell.seats.map(s => tileHTML(s, tev)).join('')}</div></div>`;
+  }).join('');
   return `<div class="strip">
       ${held ? `<button type="button" class="pill ok" data-act="unmark-day"><span class="dot"></span>Class day logged</button>`
              : `<button type="button" class="pill warn" data-act="mark-day"><span class="dot"></span>Log today as a class day</button>`}
       <span style="flex:1"></span>
       <button type="button" class="chip-btn" data-act="toggle-multi" aria-pressed="${UI.multi}">${UI.multi ? 'Done selecting' : 'Select several'}</button>
     </div>
-    <div class="tiles" role="list">${tiles}</div>
+    <div class="tiles">${tiles}</div>
     <p class="muted small">${UI.multi ? 'Tap booths to select them, then choose what to log.' : 'Tap a booth to log. Days with no entries still count when you log the class day.'}</p>`;
 }
 function tileHTML(s, tev) {
@@ -508,9 +572,10 @@ function tileHTML(s, tev) {
   const sel = UI.multi && UI.selected.has(s.id);
   const badge = UI.multi ? '<span class="check" aria-hidden="true"></span>'
     : net ? `<span class="net ${net < 0 ? 'neg' : 'pos'}">${fmtPts(net)}</span>` : '';
-  const desc = `Booth ${s.booth}, code ${s.code}${chips.length ? ', today: ' + chips.map(([l, g]) => l + (g.n > 1 ? ' times ' + g.n : '')).join(', ') : ''}`;
-  return `<button type="button" role="listitem" class="tile${sel ? ' selected' : ''}${absent ? ' absent' : ''}" data-act="tile" data-seat="${esc(s.id)}" aria-label="${esc(desc)}"${UI.multi ? ` aria-pressed="${sel}"` : ''}>
-    <span class="bn-label">BOOTH</span><span class="bn">${s.booth}</span><span class="code">${esc(s.code)}</span>
+  const side = sideOf(s);
+  const desc = `Booth ${bl(s)}, code ${s.code}${chips.length ? ', today: ' + chips.map(([l, g]) => l + (g.n > 1 ? ' times ' + g.n : '')).join(', ') : ''}`;
+  return `<button type="button" class="tile${sel ? ' selected' : ''}${absent ? ' absent' : ''}" data-act="tile" data-seat="${esc(s.id)}" aria-label="${esc(desc)}"${UI.multi ? ` aria-pressed="${sel}"` : ''}>
+    <span class="bn-label">BOOTH</span><span class="bn">${s.booth}${side ? `<span class="side">${side}</span>` : ''}</span><span class="code">${esc(s.code)}</span>
     ${badge}
     <span class="chips">${shown}${more}${tasks ? `<span class="tchip task">${tasks} task${tasks > 1 ? 's' : ''}</span>` : ''}</span>
   </button>`;
@@ -522,7 +587,7 @@ function renderApplyBar() {
   const bar = document.createElement('div');
   bar.className = 'applybar';
   bar.innerHTML = `<button type="button" class="btn ghost" data-act="multi-clear"${n ? '' : ' disabled'}>Clear</button>
-    <button type="button" class="btn primary" data-act="multi-apply"${n ? '' : ' disabled'}>Log for ${n} booth${n === 1 ? '' : 's'}</button>`;
+    <button type="button" class="btn primary" data-act="multi-apply"${n ? '' : ' disabled'}>Log for ${n} student${n === 1 ? '' : 's'}</button>`;
   document.body.appendChild(bar);
 }
 
@@ -538,9 +603,9 @@ function codeSheet(seatIds) {
   if (single) {
     const tev = todayEvents(single.cls).filter(e => e.code === single.code);
     const net = tev.reduce((a, e) => a + (['behavior', 'action', 'booth'].includes(e.kind) ? e.pts || 0 : 0), 0);
-    head = `<div class="sheet-head"><div><h2>Booth ${single.booth}</h2><div class="sub"><span class="mono">${esc(single.code)}</span> · today ${fmtPts(net)}</div></div>${closeBtn}</div>`;
+    head = `<div class="sheet-head"><div><h2>Booth ${bl(single)}</h2><div class="sub"><span class="mono">${esc(single.code)}</span> · today ${fmtPts(net)}</div></div>${closeBtn}</div>`;
   } else {
-    head = `<div class="sheet-head"><div><h2>${seats.length} booths</h2><div class="sub">Booths ${seats.map(s => s.booth).sort((a, b) => a - b).join(', ')}</div></div>${closeBtn}</div>`;
+    head = `<div class="sheet-head"><div><h2>${seats.length} students</h2><div class="sub">Booths ${[...seats].sort(bySeat).map(bl).join(', ')}</div></div>${closeBtn}</div>`;
   }
   let html = head;
   if (negs.length) html += `<div class="sec-label">Needs work</div><div class="codes">${negs.map(btn).join('')}</div>`;
@@ -561,13 +626,13 @@ function codeSheet(seatIds) {
   }
   UI.sheetSeats = seats.map(s => s.id);
   UI.sheetMode = { type: 'code' };
-  openSheet(html, single ? `Booth ${single.booth}` : `${seats.length} booths`);
+  openSheet(html, single ? `Booth ${bl(single)}` : `${seats.length} students`);
   hydrateThumbs($('#sheet-root'));
 }
 function evRow(e, withDate = true) {
   const p = ['behavior', 'action', 'booth'].includes(e.kind) && e.pts ? `<span class="p ${e.pts < 0 ? 'neg' : 'pos'}">${fmtPts(e.pts)}</span>` : '';
   const ids = photoIds(e);
-  const sub = [withDate ? fmtDate(e.date) : '', fmtTime(e.time), withDate ? clsLabel(e) : '', e.kind === 'checkpoint' ? projLabel(e) : '', ids.length > 1 ? `${ids.length} photos` : '', e.note].filter(Boolean).map(esc).join(' · ');
+  const sub = [withDate ? fmtDate(e.date) : '', fmtTime(e.time), withDate ? clsLabel(e) : '', e.kind === 'checkpoint' ? projLabel(e) : '', shareShort(e), ids.length > 1 ? `${ids.length} photos` : '', e.note].filter(Boolean).map(esc).join(' · ');
   const thumb = ids.length ? `<img class="thumb" data-photo="${esc(ids[0])}" alt="${e.kind === 'booth' ? 'Booth photo' : 'Weld photo'}" data-act="view-photo" data-ev="${esc(e.id)}">` : '';
   const btn = e.voided ? `<button type="button" class="btn sm ghost" data-act="unvoid" data-ev="${esc(e.id)}">Restore</button>`
     : `<button type="button" class="btn sm ghost" data-act="void" data-ev="${esc(e.id)}">Remove</button>`;
@@ -582,7 +647,7 @@ async function historySheet(seatId) {
   const monthStart = today().slice(0, 8) + '01';
   const cls = classById(s.cls);
   const b30 = boothPattern(s.code, true);
-  const html = `<div class="sheet-head"><div><h2>Booth ${s.booth} · <span class="mono">${esc(s.code)}</span></h2>
+  const html = `<div class="sheet-head"><div><h2>Booth ${bl(s)} · <span class="mono">${esc(s.code)}</span></h2>
       <div class="sub">${esc(cls?.name || '')}${s.active ? '' : ' · former student'} · since ${fmtDate(s.since)}</div></div>${closeBtn}</div>
     <div class="kpis"><div class="kpi"><div class="v">${fmtPts(net(week))}</div><div class="k">This week</div></div>
       <div class="kpi"><div class="v">${fmtPts(net(monthStart))}</div><div class="k">This month</div></div>
@@ -592,7 +657,7 @@ async function historySheet(seatId) {
     ${all.length ? `<div class="list">${all.slice(0, 300).map(e => evRow(e)).join('')}</div>` : '<p class="muted">No entries yet.</p>'}
     ${all.length > 300 ? '<p class="muted small">Showing the latest 300. Export for the full record.</p>' : ''}`;
   UI.sheetMode = { type: 'history', seatId };
-  openSheet(html, `History for booth ${s.booth}`);
+  openSheet(html, `History for booth ${bl(s)}`);
   await hydrateThumbs($('#sheet-root'));
 }
 
@@ -610,7 +675,7 @@ async function logCode(behId) {
   closeSheet();
   if (UI.multi) { UI.selected.clear(); UI.multi = false; }
   render();
-  const who = seats.length === 1 ? `Booth ${seats[0].booth}` : `${seats.length} booths`;
+  const who = seats.length === 1 ? `Booth ${bl(seats[0])}` : `${seats.length} students`;
   toast(`${who} · ${b.label}`, () => removeEvents(ids));
 }
 async function assignTask() {
@@ -626,7 +691,7 @@ async function assignTask() {
   vibrate(); closeSheet();
   if (UI.multi) { UI.selected.clear(); UI.multi = false; }
   render();
-  toast(`${t.label} assigned to ${seats.length === 1 ? 'booth ' + seats[0].booth : seats.length + ' booths'}`, () => removeEvents(ids));
+  toast(`${t.label} assigned to ${seats.length === 1 ? 'booth ' + bl(seats[0]) : seats.length + ' students'}`, () => removeEvents(ids));
 }
 async function taskDone(evId) {
   const a = EV.find(e => e.id === evId);
@@ -656,12 +721,12 @@ function viewCheck() {
   const latest = cpLatest();
   const withPhoto = new Set(EV.filter(x => !x.voided && x.kind === 'checkpoint' && x.photo).map(x => `${x.code}|${x.projectId}|${x.ref}`));
   const head = `<tr><th class="seat">Booth</th>${cps.map(k => `<th class="cp">${esc(k.name)}</th>`).join('')}</tr>`;
-  const rows = seats.map(s => `<tr><td class="seat"><b class="num">${s.booth}</b> <span class="mono muted small">${esc(s.code)}</span></td>${cps.map(k => {
+  const rows = seats.map(s => `<tr><td class="seat"><b class="num">${bl(s)}</b> <span class="mono muted small">${esc(s.code)}</span></td>${cps.map(k => {
     const e = latest.get(`${s.code}|${p.id}|${k.id}`);
     const st = e ? STATUS[e.status] : '';
     const lab = !e ? '' : e.status === 'Approved' ? '✓' : e.status === 'Redo' ? 'Redo' : 'Work';
     const cam = withPhoto.has(`${s.code}|${p.id}|${k.id}`) ? ' ●' : '';
-    return `<td class="cpc"><button type="button" class="cp-cell ${st}" data-act="cp-cell" data-seat="${esc(s.id)}" data-cp="${esc(k.id)}" aria-label="Booth ${s.booth}, ${esc(k.name)}: ${esc(e ? e.status : 'not shown yet')}">${lab}${cam}</button></td>`;
+    return `<td class="cpc"><button type="button" class="cp-cell ${st}" data-act="cp-cell" data-seat="${esc(s.id)}" data-cp="${esc(k.id)}" aria-label="Booth ${bl(s)}, ${esc(k.name)}: ${esc(e ? e.status : 'not shown yet')}">${lab}${cam}</button></td>`;
   }).join('')}</tr>`).join('');
   const prog = cps.map(k => {
     const n = seats.filter(s => latest.get(`${s.code}|${p.id}|${k.id}`)?.status === 'Approved').length;
@@ -679,7 +744,7 @@ async function cpSheet() {
   if (!s || !p || !k) { closeSheet(); return; }
   const hist = EV.filter(e => e.kind === 'checkpoint' && e.code === s.code && e.projectId === p.id && e.ref === k.id).sort((a, b) => b.ts - a.ts);
   const pend = st.photo ? `<div class="pending-photo"><img class="thumb" src="${st.photoURL}" alt="New weld photo"><div class="main"><div class="t">Photo ready</div><div class="s">It saves with the status you tap next.</div></div><button type="button" class="btn sm ghost" data-act="cp-clear-photo">Discard</button></div>` : '';
-  const html = `<div class="sheet-head"><div><h2>Booth ${s.booth} · ${esc(k.name)}</h2><div class="sub"><span class="mono">${esc(s.code)}</span> · ${esc(p.name)}</div></div>${closeBtn}</div>
+  const html = `<div class="sheet-head"><div><h2>Booth ${bl(s)} · ${esc(k.name)}</h2><div class="sub"><span class="mono">${esc(s.code)}</span> · ${esc(p.name)}</div></div>${closeBtn}</div>
     <div class="status-btns">
       <button type="button" class="codebtn pos" data-act="cp-status" data-status="Approved"><span>Approved</span></button>
       <button type="button" class="codebtn warnc" data-act="cp-status" data-status="Needs work"><span>Needs work</span></button>
@@ -692,7 +757,7 @@ async function cpSheet() {
     <div class="sec-label">History</div>
     ${hist.length ? `<div class="list">${hist.map(e => evRow(e)).join('')}</div>` : '<p class="muted small" style="margin:0">Not shown yet.</p>'}`;
   UI.sheetMode = { type: 'cp' };
-  openSheet(html, `Checkpoint for booth ${s.booth}`);
+  openSheet(html, `Checkpoint for booth ${bl(s)}`);
   await hydrateThumbs($('#sheet-root'));
 }
 async function cpSave(status) {
@@ -712,7 +777,7 @@ async function cpSave(status) {
   vibrate();
   closeSheet();
   render();
-  toast(`Booth ${s.booth} · ${k.name} · ${status}`, () => removeEvents([ev.id]));
+  toast(`Booth ${bl(s)} · ${k.name} · ${status}`, () => removeEvents([ev.id]));
 }
 
 // ---------- Booths tab (cleanup check) ----------
@@ -728,15 +793,17 @@ function loadSweepFlags(c, prior) {
   UI.sweep.flags = {};
   const booths = EV.filter(e => !e.voided && e.kind === 'booth' && e.sweep === prior.sweep);
   for (const b of booths) {
-    const seat = seatsOf(c.id).find(s => s.code === b.code) || seatsOf(c.id).find(s => s.booth === b.booth);
-    if (!seat) continue;
-    UI.sweep.flags[seat.id] = {
+    const key = String(b.booth);
+    const f = UI.sweep.flags[key] || (UI.sweep.flags[key] = {
       reasons: String(b.item).split('; ').map(l => S.reasons.find(r => r.label === l)?.id).filter(Boolean),
-      major: b.status === 'Major', note: b.note || '', photos: photoIds(b).map(id => ({ id })),
-    };
+      major: b.status === 'Major', note: b.note || '', photos: photoIds(b).map(id => ({ id })), who: [],
+    });
+    const seat = seatsOf(c.id).find(s => s.code === b.code);
+    if (seat && !f.who.includes(seat.id)) f.who.push(seat.id);
   }
 }
-const newFlag = () => ({ reasons: [], major: false, note: '', photos: [] });
+// A flag belongs to a physical booth; `who` lists the students in it who get the points.
+const newFlag = occ => ({ reasons: [], major: false, note: '', photos: [], who: occ.map(s => s.id) });
 // Dirty-booth entries for one student in the pattern window (default: last 30 days).
 function boothPattern(code, includeToday) {
   const t = today(), from = addDays(t, -(S.patternDays - 1));
@@ -750,45 +817,59 @@ function viewBooths() {
   if (!seats.length) return emptyState('No booths in this class', 'Add students to booths in Setup.', 'Open Setup', 'go-setup');
   const st = sweepState(c);
   const prior = todaySweep(c.id);
+  const cells = boothCells(c.id);
+  const nBooths = cells.filter(x => !x.storage).length;
   const nFlag = Object.keys(st.flags).length;
   const nMajor = Object.values(st.flags).filter(f => f.major).length;
-  const tiles = seats.map(s => {
-    const f = st.flags[s.id];
+  const tiles = cells.map(cell => {
+    if (cell.storage) return slotHTML(cell.booth);
+    const b = cell.booth, f = st.flags[b], shared = cell.seats.length > 1;
     const reasons = f ? f.reasons.map(id => S.reasons.find(r => r.id === id)?.label).filter(Boolean) : [];
     const np = f ? f.photos.length : 0;
     const state = f ? (f.major ? 'Major mess' : 'Left dirty') : 'Clean';
-    return `<button type="button" class="tile ${f ? 'flag' : 'ok-state'}${f && f.major ? ' major' : ''}" data-act="bt" data-seat="${esc(s.id)}" ${st.editing ? '' : 'disabled'} aria-label="Booth ${s.booth}: ${state.toLowerCase()}${np ? `, ${np} photo${np > 1 ? 's' : ''}` : ''}">
-      <span class="bn-label">BOOTH</span><span class="bn">${s.booth}</span><span class="state">${state}</span>
-      <span class="chips">${reasons.slice(0, 2).map(r => `<span class="tchip neg">${esc(r)}</span>`).join('')}${reasons.length > 2 ? `<span class="tchip neg">+${reasons.length - 2}</span>` : ''}${np ? `<span class="tchip act">${np} photo${np > 1 ? 's' : ''}</span>` : ''}</span></button>`;
+    const marked = f && shared ? cell.seats.filter(s => f.who.includes(s.id)) : [];
+    const shareChip = !shared ? '' : f && marked.length < cell.seats.length
+      ? `<span class="tchip task">Marked ${marked.map(bl).join(', ')}</span>` : `<span class="tchip task">Shared · ${cell.seats.length}</span>`;
+    return `<button type="button" class="tile ${f ? 'flag' : 'ok-state'}${f && f.major ? ' major' : ''}" data-act="bt" data-booth="${b}" ${st.editing ? '' : 'disabled'} aria-label="Booth ${b}${shared ? `, shared by ${cell.seats.length}` : ''}: ${state.toLowerCase()}${np ? `, ${np} photo${np > 1 ? 's' : ''}` : ''}">
+      <span class="bn-label">BOOTH</span><span class="bn">${b}</span><span class="state">${state}</span>
+      <span class="chips">${shareChip}${reasons.slice(0, 2).map(r => `<span class="tchip neg">${esc(r)}</span>`).join('')}${reasons.length > 2 ? `<span class="tchip neg">+${reasons.length - 2}</span>` : ''}${np ? `<span class="tchip act">${np} photo${np > 1 ? 's' : ''}</span>` : ''}</span></button>`;
   }).join('');
-  const patt = st.editing ? [] : seats.filter(s => st.flags[s.id]).map(s => ({ s, n: boothPattern(s.code, true).n })).filter(x => x.n >= S.patternN);
+  const patt = st.editing ? [] : Object.values(st.flags).flatMap(f => f.who.map(seatById).filter(Boolean)).map(s => ({ s, n: boothPattern(s.code, true).n })).filter(x => x.n >= S.patternN);
   const pattHTML = patt.length
-    ? `<div class="banner"><span>Pattern: ${patt.map(x => `booth ${x.s.booth} (${esc(x.s.code)}) has ${x.n} dirty booths in ${S.patternDays} days`).join('; ')}.</span>
-        <div class="row">${patt.map(x => `<button type="button" class="btn sm" data-act="history" data-seat="${esc(x.s.id)}">Booth ${x.s.booth} history</button>`).join('')}</div></div>`
+    ? `<div class="banner"><span>Pattern: ${patt.map(x => `booth ${bl(x.s)} (${esc(x.s.code)}) has ${x.n} dirty booths in ${S.patternDays} days`).join('; ')}.</span>
+        <div class="row">${patt.map(x => `<button type="button" class="btn sm" data-act="history" data-seat="${esc(x.s.id)}">Booth ${bl(x.s)} history</button>`).join('')}</div></div>`
     : '';
   const head = st.editing
     ? `<div class="banner info"><span>Every booth starts clean. Tap only the booths that were left dirty.</span></div>`
-    : `<div class="strip"><span class="pill ${nFlag ? 'neg' : 'ok'}"><span class="dot"></span>Checked at ${fmtTime(prior.time)} · ${nFlag} of ${seats.length} left dirty${nMajor ? ` (${nMajor} major)` : ''}</span><span style="flex:1"></span><button type="button" class="chip-btn" data-act="sweep-edit">Edit check</button></div>`;
+    : `<div class="strip"><span class="pill ${nFlag ? 'neg' : 'ok'}"><span class="dot"></span>Checked at ${fmtTime(prior.time)} · ${nFlag} of ${nBooths} booths left dirty${nMajor ? ` (${nMajor} major)` : ''}</span><span style="flex:1"></span><button type="button" class="chip-btn" data-act="sweep-edit">Edit check</button></div>`;
   const foot = st.editing
     ? `<div class="row">${prior ? '<button type="button" class="btn" data-act="sweep-cancel">Cancel</button>' : ''}<button type="button" class="btn primary" style="flex:1" data-act="sweep-save">Save booth check · ${nFlag} dirty</button></div>
-       <p class="muted small" style="margin:0">A dirty booth counts ${fmtPts(S.boothPts)} toward that student's employability, a major mess ${fmtPts(S.boothMajorPts)}.</p>`
+       <p class="muted small" style="margin:0">A dirty booth counts ${fmtPts(S.boothPts)} toward the employability of each student marked responsible, a major mess ${fmtPts(S.boothMajorPts)}. Hatched booths are storage.</p>`
     : '';
   return head + pattHTML + `<div class="tiles">${tiles}</div>` + foot;
 }
 const MAX_BOOTH_PHOTOS = 4;
-function boothSheet(seatId) {
-  const s = seatById(seatId);
+function boothSheet(b) {
   const st = UI.sweep;
-  if (!s || !st) return;
-  const f = st.flags[s.id] || (st.flags[s.id] = newFlag());
+  if (!st) return;
+  const occ = occupants(st.cls, b);
+  if (!occ.length) return;
+  const f = st.flags[b] || (st.flags[b] = newFlag(occ));
+  const shared = occ.length > 1;
   const sel = new Set(f.reasons);
-  const pat = boothPattern(s.code, false);
+  const pats = new Map(occ.map(s => [s.id, boothPattern(s.code, false)]));
+  const pat = pats.get(occ[0].id);
   const patTxt = pat.n
     ? `${pat.n} dirty booth${pat.n === 1 ? '' : 's'} before today in the last ${S.patternDays} days${pat.major ? `, ${pat.major} major` : ''}`
     : `No dirty booths before today in the last ${S.patternDays} days`;
+  const warn = occ.filter(s => f.who.includes(s.id) && pats.get(s.id).n + 1 >= S.patternN);
   const thumbs = f.photos.map((ph, i) => `<span class="ph"><img class="thumb" ${ph.id && !ph.url ? `data-photo="${esc(ph.id)}"` : `src="${ph.url}"`} alt="Booth photo ${i + 1}" data-act="bt-photo-view" data-i="${i}"><button type="button" class="ph-del" data-act="bt-photo-del" data-i="${i}" aria-label="Delete photo ${i + 1}">\u00d7</button></span>`).join('');
-  const html = `<div class="sheet-head"><div><h2>Booth ${s.booth} left dirty</h2><div class="sub"><span class="mono">${esc(s.code)}</span> · ${esc(patTxt)}</div></div>${closeBtn}</div>
-    ${pat.n + 1 >= S.patternN ? `<div class="banner"><span>Saving this makes the ${ordinal(pat.n + 1)} dirty booth for ${esc(s.code)} in ${S.patternDays} days. A photo and a short note will document the pattern.</span></div>` : ''}
+  const whoHTML = !shared ? '' : `<div class="sec-label">Who's responsible</div>
+    <div class="row">${occ.map(s => `<button type="button" class="chip-btn who" data-act="bt-who" data-seat="${esc(s.id)}" aria-pressed="${f.who.includes(s.id)}">${bl(s)} · <span class="mono">${esc(s.code)}</span></button>`).join('')}</div>
+    <p class="muted small" style="margin:0">Each student marked gets the points. Dirty booths before today in the last ${S.patternDays} days: ${occ.map(s => `${bl(s)} ${pats.get(s.id).n}`).join(', ')}.</p>`;
+  const html = `<div class="sheet-head"><div><h2>Booth ${b} left dirty</h2><div class="sub">${shared ? `Shared by ${occ.length} students` : `<span class="mono">${esc(occ[0].code)}</span> · ${esc(patTxt)}`}</div></div>${closeBtn}</div>
+    ${warn.length ? `<div class="banner"><span>${warn.map(s => `Saving this makes the ${ordinal(pats.get(s.id).n + 1)} dirty booth for ${esc(s.code)}`).join('. ')} in ${S.patternDays} days. A photo and a short note will document the pattern.</span></div>` : ''}
+    ${whoHTML}
     <div class="seg" role="group" aria-label="How bad">
       <button type="button" data-act="bt-sev" data-major="0" aria-pressed="${!f.major}">Left dirty ${fmtPts(S.boothPts)}</button>
       <button type="button" data-act="bt-sev" data-major="1" aria-pressed="${f.major}">Major mess ${fmtPts(S.boothMajorPts)}</button>
@@ -798,22 +879,25 @@ function boothSheet(seatId) {
     <div class="sec-label">Photos${f.photos.length ? ` (${f.photos.length} of ${MAX_BOOTH_PHOTOS})` : ''}</div>
     ${f.photos.length ? `<div class="ph-row">${thumbs}</div>` : ''}
     ${f.photos.length < MAX_BOOTH_PHOTOS ? `<button type="button" class="btn block" data-act="bt-photo">${f.photos.length ? 'Add another photo' : 'Take a photo of the booth'}</button>` : ''}
-    <p class="muted small" style="margin:0">Shoot the booth with no students in frame.${S.stampPhotos ? ' Booth, code, class and time are stamped on each photo.' : ''}</p>
+    <p class="muted small" style="margin:0">Shoot the booth with no students in frame.${S.stampPhotos ? ` ${shared ? 'Booth, class' : 'Booth, code, class'} and time are stamped on each photo.` : ''}</p>
     <label class="lbl" for="bt-note">Note<textarea class="field" id="bt-note" maxlength="300" placeholder="What you saw, in plain facts">${esc(f.note)}</textarea></label>
-    <div class="row"><button type="button" class="btn" style="flex:1" data-act="bt-ok" data-seat="${esc(s.id)}">Booth was clean</button><button type="button" class="btn primary" style="flex:1" data-act="close-sheet">Done</button></div>`;
-  UI.sheetMode = { type: 'booth', seatId };
-  openSheet(html, `Booth ${s.booth}`);
+    <div class="row"><button type="button" class="btn" style="flex:1" data-act="bt-ok" data-booth="${b}">Booth was clean</button><button type="button" class="btn primary" style="flex:1" data-act="close-sheet">Done</button></div>`;
+  UI.sheetMode = { type: 'booth', booth: String(b) };
+  openSheet(html, `Booth ${b}`);
   hydrateThumbs($('#sheet-root'));
 }
 async function boothPhoto(file) {
-  const sid = UI.sheetMode?.seatId, s = seatById(sid), f = UI.sweep?.flags[sid];
-  if (!s || !f || f.photos.length >= MAX_BOOTH_PHOTOS) return;
+  const b = UI.sheetMode?.booth, f = UI.sweep?.flags[b], occ = UI.sweep ? occupants(UI.sweep.cls, b) : [];
+  if (!f || !occ.length || f.photos.length >= MAX_BOOTH_PHOTOS) return;
   try {
-    const cap = S.stampPhotos ? [`Booth ${s.booth} · ${s.code} · ${classById(s.cls)?.name || ''}`, `Booth cleanup check · ${fmtStamp(new Date())}`] : null;
+    const clsName = classById(UI.sweep.cls)?.name || '';
+    // A shared booth's photo carries no codes, so it can sit in either student's record.
+    const line1 = occ.length > 1 ? `Booth ${b} (shared) · ${clsName}` : `Booth ${b} · ${occ[0].code} · ${clsName}`;
+    const cap = S.stampPhotos ? [line1, `Booth cleanup check · ${fmtStamp(new Date())}`] : null;
     const blob = await shrinkPhoto(file, cap);
     f.photos.push({ blob, url: URL.createObjectURL(blob) });
     render();
-    boothSheet(sid);
+    boothSheet(b);
   } catch (e) { toast('That photo couldn\'t be read. Try again.'); }
 }
 async function saveSweep() {
@@ -827,11 +911,13 @@ async function saveSweep() {
   }
   const sid = uid();
   await logEvent({ kind: 'sweep', cls: c.id, count: seats.length, sweep: sid, status: 'Done' });
+  const cells = boothCells(c.id).filter(x => !x.storage);
   let n = 0, nMajor = 0, lost = 0;
-  const flagged = [];
-  for (const s of seats) {
-    const f = st.flags[s.id];
+  for (const cell of cells) {
+    const f = st.flags[cell.booth];
     if (!f) continue;
+    const resp = cell.seats.filter(s => f.who.includes(s.id));
+    if (!resp.length) continue;
     n++; if (f.major) nMajor++;
     const labels = f.reasons.map(id => S.reasons.find(r => r.id === id)?.label).filter(Boolean);
     const ids = [];
@@ -845,14 +931,17 @@ async function saveSweep() {
         ids.push(id);
       } catch (e) { lost++; }
     }
-    await logEvent({ kind: 'booth', cls: c.id, booth: s.booth, code: s.code, item: labels.length ? labels.join('; ') : 'Not specified',
-      status: f.major ? 'Major' : 'Dirty', pts: f.major ? S.boothMajorPts : S.boothPts, note: (f.note || '').trim(), photo: ids.join(';'), sweep: sid });
-    flagged.push(s);
+    for (const s of resp) {
+      const mates = cell.seats.filter(x => x.id !== s.id);
+      await logEvent({ kind: 'booth', cls: c.id, booth: s.booth, code: s.code, item: labels.length ? labels.join('; ') : 'Not specified',
+        status: f.major ? 'Major' : 'Dirty', pts: f.major ? S.boothMajorPts : S.boothPts, note: (f.note || '').trim(), photo: ids.join(';'), sweep: sid,
+        mates: mates.map(x => x.code).join(';'), matesResp: mates.filter(x => f.who.includes(x.id)).map(x => x.code).join(';') });
+    }
   }
   st.editing = false;
   vibrate();
   render();
-  let msg = `Booth check saved · ${n} of ${seats.length} left dirty${nMajor ? ` (${nMajor} major)` : ''}`;
+  let msg = `Booth check saved · ${n} of ${cells.length} booths left dirty${nMajor ? ` (${nMajor} major)` : ''}`;
   if (lost) msg += `. ${lost} photo${lost > 1 ? 's' : ''} couldn't be saved; the phone may be out of space`;
   toast(msg, null, lost ? 9000 : 0);
 }
@@ -955,14 +1044,14 @@ function studentTableHTML(c, from, to) {
   if (f) rows = rows.filter(r => r.seat.code.includes(f) || String(r.seat.booth) === f);
   const k = UI.rsort.key, d = UI.rsort.dir;
   const val = r => (k === 'booth' ? r.seat.booth : k === 'emp' ? (r.emp == null ? 2 : r.emp) : r[k]);
-  rows.sort((a, b) => (val(a) - val(b)) * d || a.seat.booth - b.seat.booth);
+  rows.sort((a, b) => (val(a) - val(b)) * d || bySeat(a.seat, b.seat));
   const th = (key, label, cls = 'r') => `<th class="${cls}"><button type="button" class="th-btn" data-act="rsort" data-key="${key}">${label}${UI.rsort.key === key ? (d > 0 ? ' ↑' : ' ↓') : ''}</button></th>`;
   const empCls = v => (v == null ? '' : v < 0.8 ? 'low' : v < 0.9 ? 'mid' : '');
   return `<section class="card"><h2>Students</h2>
     <p class="muted small">Employability starts at ${S.base} points per class day; entries add or subtract. Tap a row for the full history.</p>
     <input class="field" id="r-filter" data-act="r-filter" placeholder="Find a code or booth number" value="${esc(UI.rfilter)}" autocomplete="off" autocapitalize="characters">
     <div class="scroll-x"><table><thead><tr>${th('booth', 'Booth', '')}<th>Code</th>${th('emp', 'Employ.')}${th('net', 'Net')}${th('neg', 'Needs work')}${th('pos', 'Positive')}${th('flags', 'Dirty booth')}${th('days', 'Days')}<th>Most often</th></tr></thead><tbody>
-    ${rows.map(r => `<tr class="clickable" data-act="history" data-seat="${esc(r.seat.id)}"><td class="num"><b>${r.seat.booth}</b></td><td class="mono">${esc(r.seat.code)}${r.seat.active ? '' : ' <span class="muted small">(left)</span>'}</td><td class="r"><span class="emp ${empCls(r.emp)}">${pct(r.emp)}</span></td><td class="r num">${fmtPts(r.net)}</td><td class="r num">${r.neg}</td><td class="r num">${r.pos}</td><td class="r num">${r.flags}${r.major ? ` <span class="muted small">(${r.major} major)</span>` : ''}</td><td class="r num">${r.days}</td><td class="muted small">${esc(r.top)}</td></tr>`).join('')}
+    ${rows.map(r => `<tr class="clickable" data-act="history" data-seat="${esc(r.seat.id)}"><td class="num"><b>${bl(r.seat)}</b></td><td class="mono">${esc(r.seat.code)}${r.seat.active ? '' : ' <span class="muted small">(left)</span>'}</td><td class="r"><span class="emp ${empCls(r.emp)}">${pct(r.emp)}</span></td><td class="r num">${fmtPts(r.net)}</td><td class="r num">${r.neg}</td><td class="r num">${r.pos}</td><td class="r num">${r.flags}${r.major ? ` <span class="muted small">(${r.major} major)</span>` : ''}</td><td class="r num">${r.days}</td><td class="muted small">${esc(r.top)}</td></tr>`).join('')}
     </tbody></table></div></section>`;
 }
 function cpProgressHTML(c) {
@@ -988,22 +1077,23 @@ function viewSetup() {
       <label class="lbl" for="cn-${esc(c.id)}">Class name<input class="field" id="cn-${esc(c.id)}" data-act="cls-name" data-id="${esc(c.id)}" value="${esc(c.name)}" maxlength="40"></label>
       <div class="edit-grid"><label class="lbl" for="cs-${esc(c.id)}">Starts<input class="field" type="time" id="cs-${esc(c.id)}" data-act="cls-start" data-id="${esc(c.id)}" value="${esc(c.start || '')}"></label>
       <label class="lbl" for="ce-${esc(c.id)}">Ends<input class="field" type="time" id="ce-${esc(c.id)}" data-act="cls-end" data-id="${esc(c.id)}" value="${esc(c.end || '')}"></label></div>
-      <div class="sec-label">${seats.length} booth${seats.length === 1 ? '' : 's'}</div>
+      <div class="sec-label">${seats.length} student${seats.length === 1 ? '' : 's'}</div>
       <div>${seats.map(s => `<div class="seat-row">
-        <input class="field num" type="number" min="1" max="99" id="sb-${esc(s.id)}" data-act="seat-booth" data-id="${esc(s.id)}" value="${s.booth}" aria-label="Booth number for code ${esc(s.code)}">
-        <div class="seat-id"><b class="mono">${esc(s.code)}</b> <span class="muted small">since ${fmtDate(s.since)}</span></div>
+        <input class="field num" type="number" min="1" max="${S.boothCount}" id="sb-${esc(s.id)}" data-act="seat-booth" data-id="${esc(s.id)}" value="${s.booth}" aria-label="Booth number for code ${esc(s.code)}">
+        <div class="seat-id"><b class="mono">${esc(s.code)}</b>${sideOf(s) ? ` <span class="tchip task">${bl(s)} shared</span>` : ''} <span class="muted small">since ${fmtDate(s.since)}</span></div>
         <button type="button" class="btn sm" data-act="seat-menu" data-id="${esc(s.id)}">Change</button>
       </div>`).join('')}</div>
-      <div class="row"><button type="button" class="btn sm" data-act="seat-add" data-cls="${esc(c.id)}">Add a booth</button>
+      <div class="row"><button type="button" class="btn sm" data-act="seat-add" data-cls="${esc(c.id)}">Add a student</button>
       <button type="button" class="btn sm ghost" data-act="cls-del" data-id="${esc(c.id)}">Remove class</button></div>
       ${former.length ? `<details><summary class="small">Former students (${former.length})</summary><p class="muted small" style="margin:0">Their codes stay in the log and the Sheet.</p><p class="mono small" style="margin:4px 0 0">${former.map(s => `${esc(s.code)} (booth ${s.booth})`).join(', ')}</p></details>` : ''}
     </div>`;
   }).join('');
   const addCls = `<form class="subcard" id="add-cls-form" data-act-submit="cls-add"><div class="sec-label">Add a class</div>
     <div class="edit-grid"><label class="lbl" for="nc-name">Name<input class="field" id="nc-name" placeholder="Period 5" maxlength="40" required></label>
-    <label class="lbl" for="nc-n">Booths<input class="field num" id="nc-n" type="number" min="0" max="60" value="12"></label></div>
+    <label class="lbl" for="nc-n">Students<input class="field num" id="nc-n" type="number" min="0" max="60" value="12"></label></div>
+    <p class="muted small" style="margin:0">Students fill the empty welding booths first, then share.</p>
     <button type="submit" class="btn">Add class</button></form>`;
-  const classesBody = `<p class="muted small" style="margin:0">Each booth gets a random code. Write each code next to the student's name in the Key tab of your school Sheet. When a new student takes a booth, tap New student so they get their own code.</p>${classes}${addCls}
+  const classesBody = `<p class="muted small" style="margin:0">Each student gets a random code. Write each code next to the student's name in the Key tab of your school Sheet. When a new student takes a booth, tap New student so they get their own code. To put two or three students in one booth, give them the same booth number; they show as 3A, 3B and 3C.</p>${classes}${addCls}
     <button type="button" class="btn" data-act="export-roster">Export roster for the Key tab</button>`;
 
   const typeSel = (b) => `<select class="field" data-act="code-type" data-id="${esc(b.id)}" aria-label="Type for ${esc(b.label)}"><option value="neg"${b.type === 'neg' ? ' selected' : ''}>Needs work</option><option value="pos"${b.type === 'pos' ? ' selected' : ''}>Positive</option><option value="action"${b.type === 'action' ? ' selected' : ''}>Action</option></select>`;
@@ -1040,6 +1130,13 @@ function viewSetup() {
   </div>`).join('');
   const projBody = `${projects}<form class="inline-form" data-act-submit="proj-add"><input class="field" id="new-proj" placeholder="New project, e.g. Lap joint (GMAW)" maxlength="60" required><button type="submit" class="btn">Add</button></form>`;
 
+  const nStore = S.storageBooths.length;
+  const shopBody = `<label class="lbl" for="shop-count">Booths in the shop<input class="field num" type="number" min="1" max="60" id="shop-count" data-act="shop-count" value="${S.boothCount}"></label>
+    <div class="sec-label">Storage booths</div>
+    <p class="muted small" style="margin:0">Tap a booth to switch it between welding and storage. Storage booths show hatched on the Class and Booths tabs and can't hold students.</p>
+    <div class="booth-picker">${Array.from({ length: S.boothCount }, (_, i) => i + 1).map(b => `<button type="button" class="chip-btn" data-act="storage-toggle" data-booth="${b}" aria-pressed="${isStorage(b)}" aria-label="Booth ${b}${isStorage(b) ? ', storage' : ''}">${b}</button>`).join('')}</div>
+    <p class="small" style="margin:0"><b>${S.boothCount - nStore} welding booth${S.boothCount - nStore === 1 ? '' : 's'}</b>${nStore ? `, ${nStore} storage (${S.storageBooths.join(', ')})` : ''}.</p>
+    ${S.classes.map(c => { const cells = boothCells(c.id).filter(x => !x.storage); const sh = cells.filter(x => x.seats.length > 1).length; const n = seatsOf(c.id).length; return `<p class="muted small" style="margin:0">${esc(c.name)}: ${n} student${n === 1 ? '' : 's'} in ${cells.length} booth${cells.length === 1 ? '' : 's'}${sh ? `, ${sh} shared` : ''}.</p>`; }).join('')}`;
   const photoBody = `<label class="toggle"><input type="checkbox" id="stamp-photos" data-act="stamp-photos"${S.stampPhotos ? ' checked' : ''}>Stamp booth, code, class, date and time on new photos</label>
     <p class="muted small" style="margin:0">The stamp keeps a photo self-explanatory when someone sees it outside the app, for example attached to a referral. Location data from the camera is always removed. The camera opens directly, so every photo is taken at the moment it's logged.</p>`;
   const gradeBody = `<label class="lbl" for="base-pts">Points each student starts with per class day<input class="field num" type="number" min="1" max="100" id="base-pts" data-act="base-pts" value="${S.base}"></label>
@@ -1069,6 +1166,7 @@ function viewSetup() {
 
   return `<div class="setup stack">
     <h1 style="font-size:24px;font-weight:850">Setup</h1>
+    ${sec('shop', 'Shop layout', shopBody)}
     ${sec('classes', 'Classes and booths', classesBody)}
     ${sec('codes', 'Behavior codes', codesBody)}
     ${sec('tasks', 'Tasks', tasksBody)}
@@ -1105,22 +1203,27 @@ function csvCell(v) {
   const s = String(v);
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
-const EVENT_COLS = ['Date', 'Time', 'Class', 'Kind', 'Booth', 'Code', 'Item', 'Status', 'Points', 'Project', 'Count', 'Note', 'Photo', 'Voided', 'EventID'];
+const EVENT_COLS = ['Date', 'Time', 'Class', 'Kind', 'Booth', 'Code', 'Item', 'Status', 'Points', 'Project', 'Count', 'Note', 'Photo', 'Voided', 'EventID', 'Shared booth'];
+function shareCSV(e) {
+  if (!e.mates || e.kind !== 'booth') return '';
+  const r = e.matesResp ? e.matesResp.split(';') : [];
+  return `With ${e.mates.split(';').join(', ')}; ${r.length ? `also marked: ${r.join(', ')}` : 'only this student marked'}`;
+}
 function eventsCSV() {
   const rows = [EVENT_COLS.join(',')];
   for (const e of [...EV].sort((a, b) => a.ts - b.ts)) {
     rows.push([
       e.date, e.time, txt(clsLabel(e)), e.kind, e.booth ?? '', e.code, txt(itemLabel(e)), e.status,
-      e.pts || 0, e.kind === 'checkpoint' ? txt(projLabel(e)) : '', e.kind === 'sweep' ? e.count : '', txt(e.note), photoNames(e).join('; '), e.voided ? 'Yes' : '', e.id,
+      e.pts || 0, e.kind === 'checkpoint' ? txt(projLabel(e)) : '', e.kind === 'sweep' ? e.count : '', txt(e.note), photoNames(e).join('; '), e.voided ? 'Yes' : '', e.id, shareCSV(e),
     ].map(csvCell).join(','));
   }
   return rows.join('\r\n') + '\r\n';
 }
 function rosterCSV() {
-  const rows = ['Class,Booth,Code,Since,Active'];
+  const rows = ['Class,Booth,Code,Since,Active,Side'];
   const order = new Map(S.classes.map((c, i) => [c.id, i]));
-  [...S.seats].sort((a, b) => (order.get(a.cls) - order.get(b.cls)) || (b.active - a.active) || a.booth - b.booth).forEach(s => {
-    rows.push([txt(classById(s.cls)?.name || ''), s.booth, s.code, s.since, s.active ? 'Yes' : 'No'].map(csvCell).join(','));
+  [...S.seats].sort((a, b) => (order.get(a.cls) - order.get(b.cls)) || (b.active - a.active) || bySeat(a, b)).forEach(s => {
+    rows.push([txt(classById(s.cls)?.name || ''), s.booth, s.code, s.since, s.active ? 'Yes' : 'No', sideOf(s)].map(csvCell).join(','));
   });
   return rows.join('\r\n') + '\r\n';
 }
@@ -1245,8 +1348,8 @@ async function restoreFile(file) {
   const ok = await ask({ title: 'Replace everything on this phone?', body: `The backup from ${data.savedAt ? new Date(data.savedAt).toLocaleDateString() : 'an earlier date'} has ${data.events.length} entries. What's on this phone now will be replaced.`, ok: 'Replace', danger: true });
   if (!ok) return;
   await store.clear('events'); await store.clear('photos');
-  S = Object.assign(defaultConfig(), data.config);
-  S.ui = Object.assign(defaultConfig().ui, data.config.ui || {}, { tab: 'class' });
+  S = loadConfig(data.config);
+  S.ui.tab = 'class';
   EV = data.events;
   await store.putMany('events', EV);
   if (Array.isArray(data.photos) && data.photos.length) {
@@ -1401,6 +1504,7 @@ function recordLines(e) {
     case 'booth':
       out.push(`${e.status === 'Major' ? 'Booth left in a major mess' : 'Booth left dirty'}${pts}`);
       if (e.item && e.item !== 'Not specified') out.push(`What was wrong: ${e.item}`);
+      if (e.mates) out.push(`${shareText(e)}.`);
       break;
     case 'behavior': out.push(`${itemLabel(e)}${pts}`); break;
     case 'action': out.push(`Action taken: ${itemLabel(e)}`); break;
@@ -1451,7 +1555,7 @@ function buildRecordPdf({ seat, evs, mode, photoRecs }) {
   const clsName = classById(seat.cls)?.name || clsLabel(evs[0]);
   pdf.para(title, { size: 20, bold: true, lead: 1.2, after: 2 });
   pdf.para('Weld Shop Tracker', { size: 9, gray: 0.4, after: 10 });
-  pdf.para(`Student code ${seat.code} · Booth ${seat.booth} · ${clsName}${seat.active ? '' : ' · former student'}`, { size: 11, bold: true, after: 8 });
+  pdf.para(`Student code ${seat.code} · Booth ${bl(seat)} · ${clsName}${seat.active ? '' : ' · former student'}`, { size: 11, bold: true, after: 8 });
   pdf.para('Student name: ____________________________________________', { size: 11, after: 8 });
   pdf.para(`Covers ${fmtLong(evs[0].date)} to ${fmtLong(evs[evs.length - 1].date)}. Prepared ${fmtStamp(new Date())}.`, { size: 9.5, gray: 0.35 });
   pdf.rule(10);
@@ -1513,17 +1617,24 @@ function buildSample() {
   days.push(t);
   const start = days[0];
   const defs = [
-    { name: 'Welding I (P1–2)', start: '07:40', end: '09:15', n: 12, bad: 0.8 },
-    { name: 'Welding II (P3–4)', start: '09:20', end: '10:55', n: 12, bad: 1.35 },
-    { name: 'Welding III (P6–7)', start: '12:10', end: '13:45', n: 10, bad: 0.6 },
+    { name: 'Welding I (P1–2)', start: '07:40', end: '09:15', bad: 0.8, booths: [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 13, 14, 14] },
+    { name: 'Welding II (P3–4)', start: '09:20', end: '10:55', bad: 1.35, booths: [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14] },
+    { name: 'Welding III (P6–7)', start: '12:10', end: '13:45', bad: 0.6, booths: [1, 2, 3, 4, 5, 6, 9, 10, 11, 12] },
   ];
   const used = new Set();
   const code = () => { for (;;) { const c = makeCode(n => Math.floor(rnd() * n)); if (!used.has(c)) { used.add(c); return c; } } };
   defs.forEach(d => {
     const id = uid();
     cfg.classes.push({ id, name: d.name, start: d.start, end: d.end });
-    for (let b = 1; b <= d.n; b++) cfg.seats.push({ id: uid(), cls: id, booth: b, code: code(), since: start, active: true, risk: 0.4 + rnd() * 1.6 * (rnd() < 0.2 ? 2.2 : 1), skill: 0.55 + rnd() * 0.4 });
+    const seen = {};
+    d.booths.forEach(b => {
+      seen[b] = (seen[b] || 0) + 1;
+      const side = d.booths.filter(x => x === b).length > 1 ? SIDES[seen[b] - 1] : '';
+      cfg.seats.push({ id: uid(), cls: id, booth: b, side, code: code(), since: start, active: true, risk: 0.4 + rnd() * 1.6 * (rnd() < 0.2 ? 2.2 : 1), skill: 0.55 + rnd() * 0.4 });
+    });
   });
+  cfg.boothCount = 14;
+  cfg.storageBooths = [7, 8];
   const [c1, c2, c3] = cfg.classes;
   // a student who moved booths partway through, to show history survives
   const leaver = cfg.seats.find(s => s.cls === c2.id && s.booth === 11);
@@ -1584,14 +1695,22 @@ function buildSample() {
         const sid = uid();
         const tm = at(date, cls, 88);
         push(Object.assign({ kind: 'sweep', cls: cls.id, clsName: cls.name, count: seats.length, sweep: sid, status: 'Done' }, tm));
-        for (const s of seats) {
-          if (rnd() < 0.07 * def.bad * (0.6 + s.risk * 0.4)) {
+        const byBooth = new Map();
+        seats.forEach(s => { if (!byBooth.has(s.booth)) byBooth.set(s.booth, []); byBooth.get(s.booth).push(s); });
+        for (const occ of byBooth.values()) {
+          const risk = Math.max(...occ.map(s => s.risk));
+          if (rnd() < 0.07 * def.bad * (0.6 + risk * 0.4)) {
             const rs = [pick(cfg.reasons)]; if (rnd() < 0.35) rs.push(pick(cfg.reasons));
-            const major = rnd() < 0.12 * s.risk;
+            const major = rnd() < 0.12 * risk;
             if (major) rs.push(pick(cfg.reasons));
-            push(Object.assign({ kind: 'booth', cls: cls.id, clsName: cls.name, booth: s.booth, code: s.code, item: [...new Set(rs.map(r => r.label))].join('; '),
-              status: major ? 'Major' : 'Dirty', pts: major ? cfg.boothMajorPts : cfg.boothPts, sweep: sid,
-              note: major ? pick(['Slag and rod stubs across the bench and floor', 'Leads tangled on the floor, stinger left on the table', 'Grinder left plugged in on the bench', 'Hoses on the floor, cart not returned']) : '' }, tm));
+            const note = major ? pick(['Slag and rod stubs across the bench and floor', 'Leads tangled on the floor, stinger left on the table', 'Grinder left plugged in on the bench', 'Hoses on the floor, cart not returned']) : '';
+            const resp = occ.length > 1 && rnd() < 0.4 ? [occ.reduce((a, s) => (s.risk > a.risk ? s : a))] : occ;
+            for (const s of resp) {
+              const mates = occ.filter(x => x !== s);
+              push(Object.assign({ kind: 'booth', cls: cls.id, clsName: cls.name, booth: s.booth, code: s.code, item: [...new Set(rs.map(r => r.label))].join('; '),
+                status: major ? 'Major' : 'Dirty', pts: major ? cfg.boothMajorPts : cfg.boothPts, sweep: sid, note,
+                mates: mates.map(x => x.code).join(';'), matesResp: mates.filter(x => resp.includes(x)).map(x => x.code).join(';') }, tm));
+            }
           }
         }
       }
@@ -1704,17 +1823,28 @@ async function onClick(el, e) {
     case 'cp-status': return cpSave(el.dataset.status);
     // booths
     case 'bt': {
-      const sid = el.dataset.seat;
+      const b = el.dataset.booth;
       const st = UI.sweep;
       if (!st || !st.editing) return;
-      if (!st.flags[sid]) st.flags[sid] = newFlag();
+      if (!st.flags[b]) st.flags[b] = newFlag(occupants(st.cls, b));
       render();
-      return boothSheet(sid);
+      return boothSheet(b);
+    }
+    case 'bt-who': {
+      const b = UI.sheetMode?.booth, f = UI.sweep?.flags[b];
+      if (!f) return;
+      const sid = el.dataset.seat, i = f.who.indexOf(sid);
+      if (i >= 0) {
+        if (f.who.length === 1) { toast('Mark at least one student. If no one is responsible, tap Booth was clean.'); return; }
+        f.who.splice(i, 1);
+      } else f.who.push(sid);
+      render();
+      return boothSheet(b);
     }
     case 'reason': {
-      const st = UI.sweep, sid = UI.sheetMode?.seatId;
-      if (!st || !sid) return;
-      const f = st.flags[sid] || (st.flags[sid] = newFlag());
+      const st = UI.sweep, b = UI.sheetMode?.booth;
+      if (!st || !b) return;
+      const f = st.flags[b] || (st.flags[b] = newFlag(occupants(st.cls, b)));
       const r = el.dataset.reason;
       const i = f.reasons.indexOf(r);
       if (i >= 0) f.reasons.splice(i, 1); else f.reasons.push(r);
@@ -1723,40 +1853,40 @@ async function onClick(el, e) {
       return;
     }
     case 'bt-sev': {
-      const sid = UI.sheetMode?.seatId, f = UI.sweep?.flags[sid];
+      const b = UI.sheetMode?.booth, f = UI.sweep?.flags[b];
       if (!f) return;
       f.major = el.dataset.major === '1';
       render();
-      return boothSheet(sid);
+      return boothSheet(b);
     }
     case 'bt-photo': UI.camTarget = 'booth'; $('#cam').value = ''; $('#cam').click(); return;
     case 'bt-photo-view': {
-      const sid = UI.sheetMode?.seatId, ph = UI.sweep?.flags[sid]?.photos[Number(el.dataset.i)];
+      const b = UI.sheetMode?.booth, ph = UI.sweep?.flags[b]?.photos[Number(el.dataset.i)];
       if (!ph) return;
       const url = ph.url || await photoURL(ph.id);
       if (!url) return;
-      openSheet(`<div class="sheet-head"><h2>Booth photo</h2>${closeBtn}</div><img class="photo-full" src="${url}" alt="Booth photo"><button type="button" class="btn" data-act="bt-back" data-seat="${esc(sid)}">Back</button>`, 'Booth photo');
+      openSheet(`<div class="sheet-head"><h2>Booth photo</h2>${closeBtn}</div><img class="photo-full" src="${url}" alt="Booth photo"><button type="button" class="btn" data-act="bt-back" data-booth="${esc(b)}">Back</button>`, 'Booth photo');
       $('#sheet-root .sheet').scrollTop = 0;
       return;
     }
-    case 'bt-back': return boothSheet(el.dataset.seat);
+    case 'bt-back': return boothSheet(el.dataset.booth);
     case 'bt-photo-del': {
-      const sid = UI.sheetMode?.seatId, f = UI.sweep?.flags[sid], i = Number(el.dataset.i);
+      const b = UI.sheetMode?.booth, f = UI.sweep?.flags[b], i = Number(el.dataset.i);
       if (!f || !f.photos[i]) return;
       if (!(await ask({ title: 'Delete this photo?', ok: 'Delete', danger: true }))) return;
       const [ph] = f.photos.splice(i, 1);
       if (ph.blob && ph.url) URL.revokeObjectURL(ph.url);
       render();
-      return boothSheet(sid);
+      return boothSheet(b);
     }
     case 'bt-ok': {
-      const st = UI.sweep, sid = el.dataset.seat, f = st?.flags[sid];
+      const st = UI.sweep, b = el.dataset.booth, f = st?.flags[b];
       if (f && (f.photos.length || (f.note || '').trim())) {
         const ok = await ask({ title: 'Mark this booth clean?', body: 'The photos and note you added for this booth will be dropped.', ok: 'Mark clean', danger: true });
         if (!ok) return;
       }
       if (f) f.photos.forEach(ph => { if (ph.blob && ph.url) URL.revokeObjectURL(ph.url); });
-      if (st) delete st.flags[sid];
+      if (st) delete st.flags[b];
       closeSheet(); return render();
     }
     case 'record-menu': {
@@ -1765,7 +1895,7 @@ async function onClick(el, e) {
       const nb = EV.filter(e => !e.voided && e.kind === 'booth' && e.code === s.code).length;
       const na = EV.filter(e => !e.voided && e.code === s.code && !['day', 'sweep'].includes(e.kind)).length;
       const ent = n => `${n} entr${n === 1 ? 'y' : 'ies'}`;
-      openSheet(`<div class="sheet-head"><div><h2>Export record</h2><div class="sub">Booth ${s.booth} · <span class="mono">${esc(s.code)}</span> · PDF for a conference or referral</div></div>${closeBtn}</div>
+      openSheet(`<div class="sheet-head"><div><h2>Export record</h2><div class="sub">Booth ${bl(s)} · <span class="mono">${esc(s.code)}</span> · PDF for a conference or referral</div></div>${closeBtn}</div>
         <button type="button" class="btn primary block" data-act="record-pdf" data-mode="booth" data-seat="${esc(s.id)}"${nb ? '' : ' disabled'}>Booth cleanup record · ${ent(nb)}</button>
         <button type="button" class="btn block" data-act="record-pdf" data-mode="all" data-seat="${esc(s.id)}"${na ? '' : ' disabled'}>Full record · ${ent(na)}</button>
         <p class="muted small" style="margin:0">Includes dates, times, notes and photos still on this phone. The PDF shows the code, with a blank line to write the name from the Key tab.</p>
@@ -1818,35 +1948,55 @@ async function onClick(el, e) {
     // setup clicks
     case 'seat-add': {
       const cls = el.dataset.cls;
-      const seats = seatsOf(cls);
-      const booth = seats.length ? Math.max(...seats.map(s => s.booth)) + 1 : 1;
-      S.seats.push({ id: uid(), cls, booth, code: newCode(), since: today(), active: true });
+      const b = freeBooth(cls);
+      if (!b) { toast(`Every welding booth already has ${MAX_PER_BOOTH} students. Add booths under Shop layout.`); return; }
+      const s = { id: uid(), cls, booth: b, side: '', code: newCode(), since: today(), active: true };
+      S.seats.push(s); placeSeat(s); UI.sweep = null;
+      await save(); render();
+      toast(`${s.code} added to booth ${bl(s)}${sideOf(s) ? ' (shared)' : ''}. Change the number to move them.`, null, 6000);
+      return;
+    }
+    case 'storage-toggle': {
+      const b = Number(el.dataset.booth);
+      if (isStorage(b)) S.storageBooths = S.storageBooths.filter(x => x !== b);
+      else {
+        const occ = S.seats.filter(s => s.active && s.booth === b);
+        if (occ.length) {
+          const where = [...new Set(occ.map(s => classById(s.cls)?.name).filter(Boolean))].join(', ');
+          toast(`Booth ${b} has students in ${where}. Move them to another booth first.`, null, 6000);
+          return;
+        }
+        S.storageBooths = [...S.storageBooths, b].sort((x, y) => x - y);
+      }
+      UI.sweep = null;
       await save(); return render();
     }
     case 'seat-menu': {
       const s = seatById(id);
-      openSheet(`<div class="sheet-head"><div><h2>Booth ${s.booth}</h2><div class="sub"><span class="mono">${esc(s.code)}</span> · since ${fmtDate(s.since)}</div></div>${closeBtn}</div>
-        <button type="button" class="btn primary block" data-act="seat-replace" data-id="${esc(s.id)}">New student in this booth</button>
-        <p class="muted small" style="margin:0">Gives the booth a fresh code. ${esc(s.code)} keeps its history under Former students.</p>
-        <button type="button" class="btn block" data-act="seat-remove" data-id="${esc(s.id)}">Remove this booth</button>
-        <p class="muted small" style="margin:0">To move a student to another booth, change the booth number in the list instead.</p>`, `Booth ${s.booth}`);
+      openSheet(`<div class="sheet-head"><div><h2>Booth ${bl(s)}</h2><div class="sub"><span class="mono">${esc(s.code)}</span> · since ${fmtDate(s.since)}</div></div>${closeBtn}</div>
+        <button type="button" class="btn primary block" data-act="seat-replace" data-id="${esc(s.id)}">New student in this spot</button>
+        <p class="muted small" style="margin:0">Gives the spot a fresh code. ${esc(s.code)} keeps its history under Former students.</p>
+        <button type="button" class="btn block" data-act="seat-remove" data-id="${esc(s.id)}">Remove this student</button>
+        <p class="muted small" style="margin:0">To move a student to another booth, or to share a booth, change the booth number in the list instead.</p>`, `Booth ${bl(s)}`);
       return;
     }
     case 'seat-replace': {
       const s = seatById(id);
-      const ok = await ask({ title: `New student in booth ${s.booth}?`, body: `${s.code} moves to Former students and keeps its history. The new student gets a fresh code.`, ok: 'Give new code' });
+      const ok = await ask({ title: `New student in booth ${bl(s)}?`, body: `${s.code} moves to Former students and keeps its history. The new student gets a fresh code.`, ok: 'Give new code' });
       if (!ok) return;
+      const lbl = bl(s);
       s.active = false;
-      const n = { id: uid(), cls: s.cls, booth: s.booth, code: newCode(), since: today(), active: true };
+      const n = { id: uid(), cls: s.cls, booth: s.booth, side: s.side || '', code: newCode(), since: today(), active: true };
       S.seats.push(n);
+      UI.sweep = null;
       closeSheet();
-      await save(); render(); toast(`Booth ${s.booth} is now ${n.code}. Add it to the Key tab.`); return;
+      await save(); render(); toast(`Booth ${lbl} is now ${n.code}. Add it to the Key tab.`); return;
     }
     case 'seat-remove': {
       const s = seatById(id);
-      const ok = await ask({ title: `Remove booth ${s.booth}?`, body: `${s.code} moves to Former students. Its entries stay in the log.`, ok: 'Remove' });
+      const ok = await ask({ title: `Remove ${s.code} from booth ${bl(s)}?`, body: `${s.code} moves to Former students. Its entries stay in the log.`, ok: 'Remove' });
       if (!ok) return;
-      s.active = false; closeSheet(); await save(); return render();
+      s.active = false; UI.sweep = null; closeSheet(); await save(); return render();
     }
     case 'cls-del': {
       const c = classById(id);
@@ -1883,6 +2033,8 @@ async function refreshSheet() {
   if (m.type === 'code' && UI.sheetSeats) return codeSheet(UI.sheetSeats);
 }
 async function onChange(el) {
+  // Redraw after the change event finishes: replacing a field while it's losing focus throws in Chrome.
+  const later = () => setTimeout(render, 0);
   const act = el.dataset.act;
   const id = el.dataset.id;
   const v = el.type === 'checkbox' ? el.checked : el.value;
@@ -1898,9 +2050,21 @@ async function onChange(el) {
     case 'seat-booth': {
       const s = seatById(id);
       const n = num(v, 1, 99, s.booth);
-      const clash = seatsOf(s.cls).find(x => x.id !== s.id && x.booth === n);
-      if (clash) { toast(`Booth ${n} already has ${clash.code}. Move that student first.`); render(); return; }
-      s.booth = n; break;
+      if (n === s.booth) { later(); return; }
+      if (n > S.boothCount) { toast(`The shop has ${S.boothCount} booths. Raise the count under Shop layout first.`); later(); return; }
+      if (isStorage(n)) { toast(`Booth ${n} is a storage booth. Switch it back under Shop layout to put a student there.`); later(); return; }
+      const occ = seatsOf(s.cls).filter(x => x.id !== s.id && x.booth === n);
+      if (occ.length >= MAX_PER_BOOTH) { toast(`Booth ${n} already has ${MAX_PER_BOOTH} students.`); later(); return; }
+      s.booth = n; placeSeat(s); UI.sweep = null;
+      if (occ.length) { await save(); render(); toast(`Booth ${n} is now shared: ${[...occ, s].sort(bySeat).map(x => `${bl(x)} ${x.code}`).join(', ')}.`, null, 6000); return; }
+      break;
+    }
+    case 'shop-count': {
+      const n = num(v, 1, 60, S.boothCount);
+      const over = S.seats.filter(x => x.active && x.booth > n);
+      if (over.length) { toast(`Booth ${Math.max(...over.map(x => x.booth))} has students. Move them before lowering the count.`); later(); return; }
+      S.boothCount = n; S.storageBooths = S.storageBooths.filter(b => b <= n); UI.sweep = null;
+      break;
     }
     case 'code-label': { const b = behById(id); if (v.trim()) b.label = v.trim(); break; }
     case 'code-type': { const b = behById(id); b.type = v; if (v === 'neg' && b.pts > 0) b.pts = -b.pts; if (v === 'pos' && b.pts < 0) b.pts = -b.pts; break; }
@@ -1934,14 +2098,20 @@ async function onSubmit(form) {
       const cfg = defaultConfig();
       const name = val('#w-cls') || 'Period 1';
       const n = clamp(Math.round(Number(val('#w-booths')) || 12), 1, 60);
+      const shop = clamp(Math.round(Number(val('#w-shop')) || 12), 1, 60);
+      const storage = [...new Set(val('#w-storage').split(/[^0-9]+/).map(Number).filter(b => b >= 1 && b <= shop))].sort((a, b) => a - b);
       const cls = { id: uid(), name, start: val('#w-start'), end: val('#w-end') };
       cfg.classes.push(cls);
       cfg.ui.cls = cls.id;
+      cfg.boothCount = shop;
+      cfg.storageBooths = storage.length < shop ? storage : [];
       S = cfg;
-      for (let b = 1; b <= n; b++) S.seats.push({ id: uid(), cls: cls.id, booth: b, code: newCode(), since: today(), active: true });
+      let added = 0;
+      for (let i = 0; i < n; i++) { const b = freeBooth(cls.id); if (!b) break; const st = { id: uid(), cls: cls.id, booth: b, side: '', code: newCode(), since: today(), active: true }; S.seats.push(st); placeSeat(st); added++; }
       await save(); requestPersist();
       render();
-      toast(`${name} created with ${n} booths. Export the roster from Setup for your Key tab.`);
+      const cells = boothCells(cls.id).filter(x => !x.storage), sh = cells.filter(x => x.seats.length > 1).length;
+      toast(`${name}: ${added} students in ${cells.length} booths${sh ? `, ${sh} shared` : ''}. Export the roster from Setup for your Key tab.`, null, 7000);
       return;
     }
     case 'cls-add': {
@@ -1949,7 +2119,7 @@ async function onSubmit(form) {
       const n = clamp(Math.round(Number(val('#nc-n')) || 0), 0, 60);
       const cls = { id: uid(), name, start: '', end: '' };
       S.classes.push(cls);
-      for (let b = 1; b <= n; b++) S.seats.push({ id: uid(), cls: cls.id, booth: b, code: newCode(), since: today(), active: true });
+      for (let i = 0; i < n; i++) { const b = freeBooth(cls.id); if (!b) break; const st = { id: uid(), cls: cls.id, booth: b, side: '', code: newCode(), since: today(), active: true }; S.seats.push(st); placeSeat(st); }
       break;
     }
     case 'code-add': { const label = val('#new-code'); if (!label) return; S.behaviors.push({ id: uid(), label, type: 'neg', pts: -1, active: true }); break; }
@@ -1982,7 +2152,7 @@ function wire() {
     if (el.dataset && el.dataset.act && el.dataset.act !== 'r-filter') onChange(el).catch(err => { console.error(err); toast('Could not save that change.'); });
   });
   document.addEventListener('input', e => {
-    if (e.target.id === 'bt-note') { const f = UI.sweep?.flags[UI.sheetMode?.seatId]; if (f) f.note = e.target.value; return; }
+    if (e.target.id === 'bt-note') { const f = UI.sweep?.flags[UI.sheetMode?.booth]; if (f) f.note = e.target.value; return; }
     if (e.target.id === 'r-filter') {
       UI.rfilter = e.target.value;
       const pos = e.target.selectionStart;
@@ -2008,7 +2178,7 @@ async function onPhoto(file) {
   if (!UI.cp) return;
   try {
     const s = seatById(UI.cp.seatId), p = projById(UI.cp.projectId), k = p?.checkpoints.find(x => x.id === UI.cp.cpId);
-    const cap = S.stampPhotos && s ? [`Booth ${s.booth} · ${s.code} · ${classById(s.cls)?.name || ''}`, `${p ? p.name : ''} · ${k ? k.name : ''} · ${fmtStamp(new Date())}`] : null;
+    const cap = S.stampPhotos && s ? [`Booth ${bl(s)} · ${s.code} · ${classById(s.cls)?.name || ''}`, `${p ? p.name : ''} · ${k ? k.name : ''} · ${fmtStamp(new Date())}`] : null;
     const blob = await shrinkPhoto(file, cap);
     if (UI.cp.photoURL) URL.revokeObjectURL(UI.cp.photoURL);
     UI.cp.photo = blob;
@@ -2036,8 +2206,7 @@ async function boot() {
   try {
     const rec = await store.get('kv', 'config');
     if (rec && rec.v) {
-      S = Object.assign(defaultConfig(), rec.v);
-      S.ui = Object.assign(defaultConfig().ui, rec.v.ui || {});
+      S = loadConfig(rec.v);
       EV = (await store.all('events')) || [];
     }
   } catch (e) { S = null; }

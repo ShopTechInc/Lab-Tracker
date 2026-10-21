@@ -34,9 +34,10 @@ Open it from the home-screen icon from then on. That's what lets it start with n
 ## First setup
 
 1. Open the app and choose **Set up your first class**, or load the sample data to try it first. Erase the sample from **Setup > Export and backup** when you're done.
-2. In **Setup > Classes and booths**, add each class with its start and end times. Each booth gets a random code like `K7Q4`.
-3. Add your projects and their checkpoints in **Setup > Projects and checkpoints**.
-4. Export the roster (**Setup > Export roster**) and import it into the **Roster** tab of the Sheet. Type each student's name next to their code on the **Key** tab.
+2. In **Setup > Shop layout**, set how many booths the shop has and tap the ones used for storage.
+3. In **Setup > Classes and booths**, add each class with its start and end times. Each student gets a random code like `K7Q4`.
+4. Add your projects and their checkpoints in **Setup > Projects and checkpoints**.
+5. Export the roster (**Setup > Export roster**) and import it into the **Roster** tab of the Sheet. Type each student's name next to their code on the **Key** tab.
 
 ## In class
 
@@ -45,6 +46,14 @@ Open it from the home-screen icon from then on. That's what lets it start with n
 - **Checkpoints tab:** tap a student's cell, take a photo of the weld if you want one, then tap Approved, Needs work or Redo. Frame the weld only.
 - **Booths tab:** every booth starts clean. Tap the ones left dirty, pick what was wrong, then **Save booth check**. For a booth left in bad shape, tap **Major mess**, take up to four photos and add a short factual note (see below).
 - **Reports tab:** today, this week, this month or any dates, for one class or all of them.
+
+## Storage booths and shared booths
+
+**Storage:** in **Setup > Shop layout**, tap a booth number to switch it to storage. Storage booths show hatched on the Class and Booths tabs, in their place in the row, so the grid still matches the room. A student can't be put in a storage booth, and a booth with students in it can't be switched to storage until they're moved.
+
+**Two or three students in one booth:** give them the same booth number in **Setup > Classes and booths**. They show as 13A and 13B (or 13C), grouped in one outlined box on the Class tab. Each keeps their own code, so tapping 13B logs only to 13B. **Add a student** fills empty welding booths first and only then doubles up.
+
+**When a shared booth is left dirty:** the Booths tab shows one tile per booth. Tap it and both students are marked responsible by default. Tap a student to unmark them if the mess was the other student's. Each student still marked gets the full points. The entry records that the booth was shared and who was marked, so the Sheet's Shared booth column and the PDF record say "only this student was marked responsible" or "every student in it was marked responsible." Photos of a shared booth are stamped with the booth and class but no codes, so they can go in either student's record.
 
 ## Documenting a booth left in bad shape
 
@@ -73,7 +82,16 @@ On the old phone: **Setup > Back up everything to a file** and save it to your s
 
 ## Updating the app
 
-Upload new versions of the files to the same repository, replacing the old ones. The app shows **A new version is ready** the next time it opens with signal; tap **Reload**. Everything already on the phone carries over.
+1. **Export first.** In the app: **Setup > Export and backup > Export log**. Updates keep everything on the phone, but a fresh export costs nothing.
+2. **Upload.** On github.com, open the `shop-tracker` repository, click **Add file > Upload files**, and drag in every file from the new folder, including the `icons` folder. Same names replace the old files. Click **Commit changes**.
+3. **Wait for the site.** Open the **Actions** tab. When the newest "pages build and deployment" run shows a green check (usually 1 to 2 minutes), the site is updated. GitHub can keep serving the old files for up to 10 minutes more, so if the next step doesn't work, wait and try again.
+4. **Update the phone.** With signal, open the app from its home-screen icon. It checks for a new version every time it opens. After a few seconds, **A new version of the app is ready** appears at the top of the screen. Tap **Reload**.
+5. **No banner?** Close the app completely (swipe it away in the app switcher), wait a minute, and open it again. If a booth or entry panel is open when the download finishes, the banner shows up after your next tap.
+6. **Check it worked.** **Setup > How your data is kept** shows the version number at the bottom.
+
+Don't delete the home-screen icon or clear Safari or Chrome data to force an update: that erases everything on the phone that hasn't been exported.
+
+After updating to version 1.2 or later from an earlier version, open **Setup > Shop layout**: the app guesses the booth count from your highest booth number, so check it and tap your storage booths.
 
 ## For district IT
 
