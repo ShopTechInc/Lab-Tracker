@@ -280,6 +280,10 @@ tbody tr:last-child td { border-bottom: 0; }
 .cp-cell.shown { background: var(--warn-soft); color: var(--warn); border: 0; }
 .cp-cell.redo { background: var(--neg-soft); color: var(--neg); border: 0; }
 .cp-table td.cpc { padding: 4px; }
+/* The grid scrolls inside its own box, so the checkpoint names stay on top and the codes stay on the left. */
+.cp-wrap { max-height: max(280px, calc(100dvh - var(--nav-h) - 190px)); overflow: auto; overscroll-behavior: contain; }
+.cp-table thead th { position: sticky; top: 0; z-index: 2; background: var(--surface); box-shadow: inset 0 -1px 0 var(--line); }
+.cp-table thead th.seat { z-index: 3; }
 .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
@@ -392,3 +396,33 @@ tr.clickable:active td { background: var(--surface-2); }
   background: repeating-linear-gradient(135deg, var(--surface) 0 6px, var(--surface-2) 6px 9px);
 }
 .chip-btn.who { min-height: 44px; }
+
+/* Shared areas and earned hours */
+.tile.area-tile { min-height: 84px; }
+.tile .area-name { font-size: 16px; font-weight: 800; line-height: 1.2; overflow-wrap: anywhere; }
+.tile.area-tile.flag .area-name, .tile.area-tile.flag .bn-label { color: var(--neg); }
+.cp-table th.cp .cp-std { display: block; font-size: 10.5px; font-weight: 600; color: var(--ink-3); margin-top: 2px; }
+.hours-box { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; background: var(--surface-2); }
+.stepper { display: grid; grid-template-columns: 56px 1fr 56px; gap: 8px; }
+.stepper .btn { font-size: 22px; padding: 0; }
+.stepper .field { text-align: center; font-size: 20px; font-weight: 750; font-variant-numeric: tabular-nums; }
+
+/* Sheet children never squeeze below their content (labels with a min-height would otherwise overlap) */
+.sheet > * { flex-shrink: 0; }
+
+/* Import from the Sheet */
+.imp-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.imp-list details { margin-top: 2px; }
+#imp-text { min-height: 120px; font-size: 12.5px; letter-spacing: 0; white-space: pre; overflow-x: auto; }
+
+/* Lab work in a student's history */
+.cred-row { display: flex; gap: 8px; align-items: flex-start; font-size: 13.5px; }
+.cred-row .pill { flex: none; }
+.lab-list { display: flex; flex-direction: column; gap: 6px; }
+.lab-proj { border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px; }
+.lab-proj > summary { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; cursor: pointer; }
+.lab-cps { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.lab-cp { display: grid; grid-template-columns: 1fr 76px; gap: 8px; align-items: center; font-size: 13.5px; }
+/* New school year */
+.yr-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 8px; align-items: center; font-size: 13.5px; }
+.yr-row .field { min-height: 40px; font-size: 13.5px; }
